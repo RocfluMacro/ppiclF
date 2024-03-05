@@ -202,6 +202,8 @@ c     if (npt_total .eq. 1) then
                ppiclf_bins_dx(i) = (ppiclf_binb(2*(i-1)+2) -
      >                              ppiclf_binb(2*(i-1)+1)  ) / 
      >                             ppiclf_n_bins(i)
+!         WRITE(*,*) "infinite loop", i, ppiclf_bins_dx(i),
+!     >    ppiclf_d2chk(1)
             enddo
          endif
          total_bin = total_bin*ppiclf_n_bins(i)
@@ -414,6 +416,10 @@ c     current box coordinates
       real*8 ppiclf_vlmin, ppiclf_vlmax
       external ppiclf_vlmin, ppiclf_vlmax
 
+      ! Sam - for ghost cells
+      real*8 xmin(3), xmax(3), xminb(3), xmaxb(3)
+      integer*4 nsendg, iig(3), iin(3), iing(3)
+
       ! see which bins are in which elements
       ppiclf_neltb = 0
       do ie=1,ppiclf_nee
@@ -592,6 +598,200 @@ c     current box coordinates
          ppiclf_el_map(8,ie) = khigh
       enddo
 
+! Sam - communicate ghost cells for 1st order interpolation
+! First decide which cells need to go to which
+
+      ppiclf_d2chk(1) = max(ppiclf_d2chk(2),ppiclf_d2chk(3))
+
+      ! get local bin index, see formula for ndum earlier
+      ! Note that at this point, the elements have already been communicated to
+      ! their proper bins
+      iin(1) = modulo(ppiclf_nid,ppiclf_n_bins(1))
+      iin(2) = modulo(ppiclf_nid/ppiclf_n_bins(1),ppiclf_n_bins(2))
+      iin(3) = ppiclf_nid/(ppiclf_n_bins(1)*ppiclf_n_bins(2))
+
+      ! Get the edges of the bin for this processor, which is the bin this
+      ! element is in
+      do j=1,3
+        xminb(j) = iin(j)*ppiclf_bins_dx(j) + ppiclf_binb((j-1)*2 + 1)
+        xmaxb(j) = xminb(j) + ppiclf_bins_dx(j)
+      enddo
+
+      ppiclf_neltbg = 0 ! this variable is the number of ghost elements
+      do ie=1,ppiclf_neltb
+        ! get the maximum and minimum x, y, and z values for the element
+        ! This allows for worst case ghost cell communication
+        do j=1,3 ! x, y, z directions
+          ! get the worst case vertex of the cell
+          xmin(j) = ppiclf_vlmin(ppiclf_xm1b(1,1,1,j,ie), nxyz)
+          xmax(j) = ppiclf_vlmax(ppiclf_xm1b(1,1,1,j,ie), nxyz)
+
+          ! NOTE: current implementation ignores periodicity. 
+          ! This will need to be fixed
+  
+          ! check if particle is near a bin boundary
+          if (min(abs(xmin(j) - xminb(j)), abs(xmax(j) - xminb(j)))
+     >        .lt. ppiclf_d2chk(1)) then ! xmin boundary
+
+            iig(j) = iin(j) - 1
+
+          else if (min(abs(xmax(j) - xmaxb(j)), abs(xmin(j) - xmaxb(j)))
+     >          .lt.   ppiclf_d2chk(1)) then ! xmax boundary
+
+            iig(j) = iin(j) + 1
+          else
+            iig(j) = -1 ! not near a boundary - no need to communicate
+          endif
+  
+          ! if we are sending this element to another bin and the receiving bin
+          ! is valid
+          if ((iig(j) .gt. -1) .and. (iig(j) .lt. 
+     >        ppiclf_n_bins(j))) then
+
+            ppiclf_neltbg = ppiclf_neltbg + 1
+
+            ! copy iin to iing array
+            !call ppiclf_copy(iing(1), iin(1), 3)
+            !iing(j) = iig(j) ! modify iing array to index ghost bin
+
+            iing(1) = iin(1)
+            iing(2) = iin(2)
+            iing(3) = iin(3)
+
+            iing(j) = iig(j)
+
+            ! processor of the bin index iing
+            nrank = iing(1) + ppiclf_n_bins(1)*iing(2) + 
+     >                ppiclf_n_bins(1)*ppiclf_n_bins(2)*iing(3)
+  
+            ! this was a clunky first pass.
+!            if (j .eq. 1) then
+!              nrank = iing(1) + ppiclf_n_bins(1)*iin(2) + 
+!     >                  ppiclf_n_bins(1)*ppiclf_n_bins(2)*iin(3)
+!            else if (j .eq. 2) then
+!              nrank = iin(1) + ppiclf_n_bins(1)*iin(2) + 
+!     >                  ppiclf_n_bins(1)*ppiclf_n_bins(2)*iin(3)
+!            else
+!              nrank = iin(1) + ppiclf_n_bins(1)*iin(2) + 
+!     >                  ppiclf_n_bins(1)*ppiclf_n_bins(2)*iig(3)
+!            endif
+  
+            ! save to map for use in crystal router call later
+            ppiclf_er_mapg(1,ppiclf_neltbg) = ie
+            ppiclf_er_mapg(2,ppiclf_neltbg) = ppiclf_nid
+            ppiclf_er_mapg(3,ppiclf_neltbg) = nrank
+            ppiclf_er_mapg(4,ppiclf_neltbg) = nrank
+            ppiclf_er_mapg(5,ppiclf_neltbg) = nrank
+            ppiclf_er_mapg(6,ppiclf_neltbg) = nrank
+  
+            ! copy element to array for communication
+            call ppiclf_copy(ppiclf_xm1bg(1,1,1,1,ppiclf_neltbg),
+     >                       ppiclf_xm1b(1,1,1,1,ie), 3*nxyz)
+          end if
+        enddo ! j
+
+        ! edge cases
+        ! --------+--------+--------
+        !         +        +
+        !         +        + ghost
+        !         +        + cell
+        ! --------+--------+----------bin boundary
+        !         +   point+ 
+        !         +        +
+        !         +        +
+        ! --------+--------+--------
+        !
+        ! loop over pairs of directions
+        ! x, y; x, z; y, z
+        do i=1,2
+        do k=i+1,3
+
+          if ((iig(i) .gt. -1) .and. (iig(i) .lt. 
+     >        ppiclf_n_bins(i))) then
+          if ((iig(k) .gt. -1) .and. (iig(k) .lt. 
+     >        ppiclf_n_bins(k))) then
+
+            ppiclf_neltbg = ppiclf_neltbg + 1
+
+            iing(1) = iin(1)
+            iing(2) = iin(2)
+            iing(3) = iin(3)
+
+            ! similar to previous, but now the 2 bin indices need to change
+            iing(i) = iig(i)
+            iing(k) = iig(k)
+
+            nrank = iing(1) + ppiclf_n_bins(1)*iing(2) + 
+     >                ppiclf_n_bins(1)*ppiclf_n_bins(2)*iing(3)
+
+            ppiclf_er_mapg(1,ppiclf_neltbg) = ie
+            ppiclf_er_mapg(2,ppiclf_neltbg) = ppiclf_nid
+            ppiclf_er_mapg(3,ppiclf_neltbg) = nrank
+            ppiclf_er_mapg(4,ppiclf_neltbg) = nrank
+            ppiclf_er_mapg(5,ppiclf_neltbg) = nrank
+            ppiclf_er_mapg(6,ppiclf_neltbg) = nrank
+  
+            call ppiclf_copy(ppiclf_xm1bg(1,1,1,1,ppiclf_neltbg),
+     >                       ppiclf_xm1b(1,1,1,1,ie), 3*nxyz)
+
+          endif
+          endif
+
+        enddo
+        enddo
+
+        ! corner case - 3D version of edge cases
+       if ((iig(1) .gt. -1) .and. (iig(1) .lt. 
+     >     ppiclf_n_bins(1))) then
+       if ((iig(2) .gt. -1) .and. (iig(2) .lt. 
+     >     ppiclf_n_bins(2))) then
+       if ((iig(3) .gt. -1) .and. (iig(3) .lt. 
+     >     ppiclf_n_bins(3))) then
+
+         ppiclf_neltbg = ppiclf_neltbg + 1
+
+         ! no need to copy since all 3 indices are iig
+         nrank = iig(1) + ppiclf_n_bins(1)*iig(2) + 
+     >             ppiclf_n_bins(1)*ppiclf_n_bins(2)*iig(3)
+
+         ppiclf_er_mapg(1,ppiclf_neltbg) = ie
+         ppiclf_er_mapg(2,ppiclf_neltbg) = ppiclf_nid
+         ppiclf_er_mapg(3,ppiclf_neltbg) = nrank
+         ppiclf_er_mapg(4,ppiclf_neltbg) = nrank
+         ppiclf_er_mapg(5,ppiclf_neltbg) = nrank
+         ppiclf_er_mapg(6,ppiclf_neltbg) = nrank
+  
+         call ppiclf_copy(ppiclf_xm1bg(1,1,1,1,ppiclf_neltbg),
+     >                    ppiclf_xm1b(1,1,1,1,ie), 3*nxyz)
+
+       endif
+       endif
+       endif
+
+      end do !ie
+
+      do ie=1,ppiclf_neltbg
+         call ppiclf_icopy(ppiclf_er_mapgs(1,ie),ppiclf_er_mapg(1,ie)
+     >             ,PPICLF_LRMAX)
+      enddo
+
+      ! call crystal router to communicate ghost cells. Use the same map to
+      ! communicate ghost cell interpolated properties later.
+      nl   = 0
+      nii  = PPICLF_LRMAX
+      njj  = 6
+      nxyz = PPICLF_LEX*PPICLF_LEY*PPICLF_LEZ
+      nrr  = nxyz*3
+      nkey(1) = 2
+      nkey(2) = 1
+      ppiclf_neltbbg = ppiclf_neltbg
+      call pfgslib_crystal_tuple_transfer(ppiclf_cr_hndl,ppiclf_neltbg
+     >       ,PPICLF_LEE,ppiclf_er_mapg,nii,partl,nl,ppiclf_xm1bg,nrr,njj)
+      call pfgslib_crystal_tuple_sort    (ppiclf_cr_hndl,ppiclf_neltbg
+     >       ,ppiclf_er_mapg,nii,partl,nl,ppiclf_xm1bg,nrr,nkey,2)
+
+! Sam - end
+
       if (icalld .eq. 0) then 
 
          icalld = icalld + 1
@@ -723,7 +923,8 @@ c-----------------------------------------------------------------------
 !
       logical partl    
       integer*4 lrf
-      parameter(lrf = PPICLF_LRS*4 + PPICLF_LRP + PPICLF_LRP2)
+      parameter(lrf = PPICLF_LRS*4 + PPICLF_LRP + PPICLF_LRP2
+     >       + PPICLF_LRP3)
       real*8 rwork(lrf,PPICLF_LPART)
       integer*4 i, ic, j0
 !
@@ -742,6 +943,8 @@ c-----------------------------------------------------------------------
          call ppiclf_copy(rwork(ic,i),ppiclf_rprop(1,i),PPICLF_LRP)
          ic = ic + PPICLF_LRP
          call ppiclf_copy(rwork(ic,i),ppiclf_rprop2(1,i),PPICLF_LRP2)
+         ic = ic + PPICLF_LRP2
+         call ppiclf_copy(rwork(ic,i),ppiclf_rprop3(1,i),PPICLF_LRP3)
       enddo
 
       j0 = 4
@@ -769,6 +972,8 @@ c-----------------------------------------------------------------------
          call ppiclf_copy(ppiclf_rprop(1,i),rwork(ic,i),PPICLF_LRP)
          ic = ic + PPICLF_LRP
          call ppiclf_copy(ppiclf_rprop2(1,i),rwork(ic,i),PPICLF_LRP2)
+         ic = ic + PPICLF_LRP2
+         call ppiclf_copy(ppiclf_rprop3(1,i),rwork(ic,i),PPICLF_LRP3)
       enddo
         
       return

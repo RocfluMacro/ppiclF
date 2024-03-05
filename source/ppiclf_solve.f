@@ -78,6 +78,7 @@
       implicit none
 !
       include "PPICLF"
+      include 'mpif.h'
 !
 ! Input: 
 !
@@ -85,8 +86,11 @@
       integer*4  ndim
       integer*4  iendian
       integer*4  npart
+      integer*4  ierr
       real*8     y(*)
       real*8     rprop(*)
+!
+      call mpi_barrier(ppiclf_comm,ierr)
 !
       if (.not.PPICLF_LCOMM)
      >call ppiclf_exittr('InitMPI must be before InitParticle$',0.0d0
@@ -103,23 +107,31 @@
          call ppiclf_prints('   *Begin InitParam$')
             call ppiclf_solve_InitParam(imethod,ndim,iendian)
          call ppiclf_prints('    End InitParam$')
-         
+
          if (.not. PPICLF_RESTART) then
-            call ppiclf_solve_InitZero
-            call ppiclf_solve_AddParticles(npart,y,rprop)
+            call ppiclf_prints('   *Begin InitZero$')
+               call ppiclf_solve_InitZero
+            call ppiclf_prints('   *End InitZero$')
+            call ppiclf_prints('   *Begin AddParticles$')
+               call ppiclf_solve_AddParticles(npart,y,rprop)
+            call ppiclf_prints('   *End AddParticles$')
+
+            call ppiclf_prints('   *Begin WriteParticleVTU$')
+               call ppiclf_io_WriteParticleVTU('')
+            call ppiclf_prints('    End WriteParticleVTU$')
          endif
 
-      call ppiclf_prints('   *Begin WriteParticleVTU$')
-         call ppiclf_io_WriteParticleVTU('')
-      call ppiclf_prints('    End WriteParticleVTU$')
 
 !     call ppiclf_prints('   *Begin WriteBinVTU$')
 !        call ppiclf_io_WriteBinVTU('')
 !     call ppiclf_prints('    End WriteBinVTU$')
 
       call ppiclf_prints(' End InitParticle$')
+!
+      call mpi_barrier(ppiclf_comm,ierr)
+!
 
-            call ppiclf_io_OutputDiagGen
+      call ppiclf_io_OutputDiagGen
 
       PPICLF_LINIT = .true.
 
@@ -138,7 +150,7 @@
       integer*4  ndim
       integer*4  iendian
 !
-      if (imethod .eq. 0 .or. abs(imethod) .ge. 2)
+      if (imethod .eq. 0 .or. imethod .ge. 3 .or. imethod .le. -2)
      >   call ppiclf_exittr('Invalid integration method$',0.0d0,imethod)
       if (ndim .le. 1 .or. ndim .ge. 4)
      >   call ppiclf_exittr('Invalid problem dimension$',0.0d0,ndim)
@@ -336,6 +348,9 @@
       do j=1,PPICLF_LRP2
          ppiclf_rprop2(j,i) = 0.0d0
       enddo
+      do j=1,PPICLF_LRP3
+         ppiclf_rprop3(j,i) = 0.0d0
+      enddo
       do j=1,PPICLF_LIP
          ppiclf_iprop(j,i) = 0
       enddo
@@ -353,6 +368,8 @@
       enddo
       enddo
       enddo
+
+      !!call ppiclf_user_InitZero
 
       return
       end
@@ -998,6 +1015,8 @@ c----------------------------------------------------------------------
      >   call ppiclf_solve_IntegrateRK3(iout)
       if (ppiclf_imethod .eq. -1) 
      >   call ppiclf_solve_IntegrateRK3s(iout)
+      if (ppiclf_imethod .eq. 2)
+     >   call ppiclf_solve_IntegrateRK3s_Rocflu(iout)
 
       ! output files
       if (ppiclf_iostep .gt.0)then
@@ -1116,6 +1135,73 @@ c----------------------------------------------------------------------
       return
       end
 c----------------------------------------------------------------------
+      subroutine ppiclf_solve_IntegrateRK3s_Rocflu(iout)
+!
+      implicit none
+!
+      include "PPICLF"
+! 
+! Internal: 
+! 
+      integer*4 i, ndum, nstage, istage
+      integer*4 icalld
+      save      icalld
+      data      icalld /0/
+
+!
+! Output:
+!
+      logical iout
+!
+      icalld = icalld + 1
+
+      ! get rk3 coeffs
+      call ppiclf_solve_SetRK3Coeff(ppiclf_dt)
+
+      nstage = 3
+      istage = mod(icalld,nstage)
+      if (istage .eq. 0) istage = 3
+      iout = .false.
+      if (istage .eq. nstage) iout = .true.
+
+      ! evaluate ydot
+      call ppiclf_solve_SetYdot
+
+      !Zero out for first stage
+      if (istage .eq. 1) then
+        ndum = PPICLF_NPART*PPICLF_LRS
+        do i=1,ndum
+          ppiclf_y1(i) = 0.0d0 
+        enddo
+      endif
+
+      ! TLJ comment Dec 7, 2023
+      ! The Rocflu RK3 can be found in equation (7) of:
+      ! S. Yu. "Runge-Kutta Methods Combined with Compact
+      !   Difference Schemes for the Unsteady Euler Equations".
+      !   Center for Modeling of Turbulence and Transition.
+      !   Research Briefs, 1991.
+
+      ndum = PPICLF_NPART*PPICLF_LRS
+      do i=1,ndum
+         ppiclf_y(i,1) =  -ppiclf_rk3coef(1,istage)*ppiclf_y1   (i)
+     >                   + ppiclf_rk3coef(2,istage)*ppiclf_y    (i,1)
+     >                   + ppiclf_rk3coef(3,istage)*ppiclf_ydot (i,1)
+      enddo
+
+!Store Current stage RHS for next stage's use
+        do i=1,ndum
+         ppiclf_y1(i) = ppiclf_ydot(i,1)
+      enddo
+
+!WAARNING: Experimental fix to keep particles unsure where to place this
+!          command. Either before or after the storing of the current 
+!          storage
+        call ppiclf_solve_RemoveParticle      
+!End Experimental fix
+      return
+      end
+c----------------------------------------------------------------------
       subroutine ppiclf_solve_SetYdot
 !
       implicit none
@@ -1145,10 +1231,9 @@ c----------------------------------------------------------------------
       if (ppiclf_overlap) 
      >   call ppiclf_comm_MapOverlapMesh
       if ((ppiclf_lintp .and. ppiclf_int_icnt .ne. 0) .or.
-     >    (ppiclf_lproj .and. ppiclf_sngl_elem)) 
+     >    (ppiclf_lproj .and. ppiclf_sngl_elem))
      >   call ppiclf_solve_InterpParticleGrid
       call ppiclf_solve_RemoveParticle
-
       if (ppiclf_lsubsubbin .or. ppiclf_lproj) then
          call ppiclf_comm_CreateGhost
          call ppiclf_comm_MoveGhost
@@ -1158,14 +1243,12 @@ c----------------------------------------------------------------------
      >   call ppiclf_solve_ProjectParticleGrid
       if (ppiclf_lsubsubbin) 
      >   call ppiclf_solve_SetNeighborBin
-
       ! Zero 
       do i=1,PPICLF_LPART
       do j=1,PPICLF_LRS
          ppiclf_ydotc(j,i) = 0.0d0
       enddo
       enddo
-
       return
       end
 !-----------------------------------------------------------------------
@@ -1185,7 +1268,12 @@ c----------------------------------------------------------------------
       enddo
       call ppiclf_solve_FinalizeInterp
 
+      call ppiclf_solve_LocalInterp
+
       call ppiclf_solve_PostInterp
+
+      PPICLF_INT_ICNT = 0
+
 
       return
       end
@@ -1374,16 +1462,19 @@ c     ndum    = ppiclf_neltb*n
      >                      ,ppiclf_int_fld(1,1,1,i,ie),nxyz)
          enddo
 
+         ! sam commenting out eval nearest neighbor to use Local Interp instead
+         ! leaving findpts call to help with projection, where the element id is
+         ! needed. 
          ! interpolate field locally
-         call pfgslib_findpts_eval_local( PPICLF_FP_HNDL
-     >                                  ,ppiclf_rprop (jp,1)
-     >                                  ,PPICLF_LRP
-     >                                  ,ppiclf_iprop (2,1)
-     >                                  ,PPICLF_LIP
-     >                                  ,ppiclf_rprop2(1,1)
-     >                                  ,PPICLF_LRP2
-     >                                  ,PPICLF_NPART
-     >                                  ,fld)
+!         call pfgslib_findpts_eval_local( PPICLF_FP_HNDL
+!     >                                  ,ppiclf_rprop (jp,1)
+!     >                                  ,PPICLF_LRP
+!     >                                  ,ppiclf_iprop (2,1)
+!     >                                  ,PPICLF_LIP
+!     >                                  ,ppiclf_rprop2(1,1)
+!     >                                  ,PPICLF_LRP2
+!     >                                  ,PPICLF_NPART
+!     >                                  ,fld)
 
       enddo
 
@@ -1391,7 +1482,298 @@ c     ndum    = ppiclf_neltb*n
       call pfgslib_findpts_free(PPICLF_FP_HNDL)
 
       ! Set interpolated fields to zero again
-      PPICLF_INT_ICNT = 0
+      ! Sam - commenting out for local routine
+      !PPICLF_INT_ICNT = 0
+
+      return
+      end
+!-----------------------------------------------------------------------
+      subroutine ppiclf_solve_LocalInterp
+      implicit none
+
+      include "PPICLF"
+
+      ! internal
+      integer*4 i,j,k,l,ix,iy,iz
+      integer*4 ip, ie, iee, inearest(28), nnearest, nxyz, neltgg
+      real*8 A(27, 4), d2i, d2(28), centeri(3), xp(3), center(3, 28)
+      real*8 U(27, 27), SIG(4), Vt(4, 4), b(27, 1)
+      real*8 interp(4, 1) ! for SVD
+      integer*4 m, n, lda, ldu, ldvt, lwork, info, ierr
+      real*8 w(27), wsum, eps
+      real*8 work(5*27+4)
+      character jobu, jobv
+      logical added, indg(28)
+
+      integer*4 nl, nii, njj, nkey(2), nrr
+      logical partl
+
+      eps = 1.0e-12
+
+
+      nxyz = PPICLF_LEX*PPICLF_LEY*PPICLF_LEZ
+
+
+      do ie=1,ppiclf_neltbbg
+         call ppiclf_icopy(ppiclf_er_mapgc(1,ie),ppiclf_er_mapgs(1,ie)
+     >             ,PPICLF_LRMAX)
+      enddo
+
+      do ie=1,ppiclf_neltbbg
+         iee = ppiclf_er_mapgc(1, ie)
+         call ppiclf_copy(ppiclf_int_fldg(1,1,1,1,ie)
+     >   ,ppiclf_int_fld(1,1,1,1,iee),nxyz*PPICLF_LRP_INT)
+      enddo
+
+      ! communicate ghost flow interpolated properties
+      ! send it all
+      nl   = 0
+      nii  = PPICLF_LRMAX
+      njj  = 6
+      nxyz = PPICLF_LEX*PPICLF_LEY*PPICLF_LEZ
+      nrr  = nxyz*PPICLF_LRP_INT
+      nkey(1) = 2
+      nkey(2) = 1
+      neltgg = ppiclf_neltbbg
+
+!      call pfgslib_crystal_tuple_transfer(ppiclf_cr_hndl,ppiclf_neltbbb
+!     >      ,PPICLF_LEE,ppiclf_er_mapc,nii,partl,nl,ppiclf_int_fld
+!     >      ,nrr,njj)
+!      call pfgslib_crystal_tuple_sort    (ppiclf_cr_hndl,ppiclf_neltbbb
+!     >       ,ppiclf_er_mapc,nii,partl,nl,ppiclf_int_fld,nrr,nkey,2)
+
+
+      call pfgslib_crystal_tuple_transfer(ppiclf_cr_hndl,neltgg
+     >      ,PPICLF_LEE,ppiclf_er_mapgc,nii,partl,nl,ppiclf_int_fldg
+     >      ,nrr,njj)
+      call pfgslib_crystal_tuple_sort    (ppiclf_cr_hndl,neltgg
+     >       ,ppiclf_er_mapgc,nii,partl,nl,ppiclf_int_fldg,nrr,nkey,2)
+
+
+
+      ! neighbor search O(Nparticles * Nelements)
+      ! this should be switched to a KD tree for Log(Nelements) scaling
+      do ip=1,ppiclf_npart
+        ! particle center
+        xp(1) = ppiclf_y(PPICLF_JX, ip)
+        xp(2) = ppiclf_y(PPICLF_JY, ip)
+        xp(3) = ppiclf_y(PPICLF_JZ, ip)
+
+        nnearest = 0 ! number of nearby elements
+
+        do ie=1,28
+          inearest(ie) = -1 ! index of nearest elements
+          d2(ie) = 1E20 ! distance to center of nearest element
+        enddo
+
+        do ie=1,ppiclf_neltbbb
+          ! calculate centroid - should definitely store this instead of
+          ! recalculating
+          do l=1,3
+            centeri(l) = 0
+          enddo
+
+          do l=1,3
+          do k=1,PPICLF_LEZ
+          do j=1,PPICLF_LEY
+          do i=1,PPICLF_LEX
+            centeri(l) = centeri(l) + ppiclf_xm1b(i, j, k, l, ie)
+          enddo
+          enddo
+          enddo
+          enddo
+
+          do l=1,3
+            centeri(l) = centeri(l) / nxyz
+          enddo
+
+          ! get distance from particle to center
+          d2i = 0
+          do l=1,3
+            d2i = d2i + (centeri(l) - xp(l))**2
+          enddo
+
+          ! sort
+          added = .false.
+          do i=1,27
+            j = 27 - i + 1
+
+            if (d2i .lt. d2(j)) then
+              d2(j+1) = d2(j)
+              inearest(j+1) = inearest(j)
+              do l=1,3
+                center(l, j+1) = center(l, j)
+              enddo
+              indg(j+1) = indg(j)
+
+              d2(j) = d2i
+              inearest(j) = ie
+              do l=1,3
+                center(l, j) = centeri(l)
+              enddo
+              indg(j) = .false. ! not a ghost particle
+
+              added = .true.
+              ! else 
+              !  break ! maybe use a goto in fortran
+            endif
+          enddo !i
+
+          if (added) nnearest = nnearest + 1
+          
+        enddo ! ie
+
+        ! ghost elements
+        do ie=1,neltgg
+          ! calculate centroid
+          do l=1,3
+            centeri(l) = 0
+          enddo
+
+          do l=1,3
+          do k=1,PPICLF_LEZ
+          do j=1,PPICLF_LEY
+          do i=1,PPICLF_LEX
+            centeri(l) = centeri(l) + ppiclf_xm1bg(i, j, k, l, ie)
+          enddo
+          enddo
+          enddo
+          enddo
+
+          do l=1,3
+            centeri(l) = centeri(l) / nxyz
+          enddo
+
+          ! get distance
+          d2i = 0
+          do l=1,3
+            d2i = d2i + (centeri(l) - xp(l))**2
+          enddo
+
+          ! sort
+          added = .false.
+          do i=1,27
+            j = 27 - i + 1
+
+            if (d2i .lt. d2(j)) then
+              d2(j+1) = d2(j)
+              inearest(j+1) = inearest(j)
+              do l=1,3
+                center(l, j+1) = center(l, j)
+              enddo
+              indg(j+1) = indg(j)
+
+              d2(j) = d2i
+              inearest(j) = ie
+              do l=1,3
+                center(l, j) = centeri(l)
+              enddo
+              indg(j) = .true. ! a ghost particle inndg = indicate ghost
+
+              added = .true.
+              ! else 
+              !  break ! maybe use a goto in fortran
+            endif
+          enddo !i
+
+          if (added) nnearest = nnearest + 1
+          
+        enddo ! ie
+
+        nnearest = min(nnearest, 27)
+
+        if (nnearest .lt. 1) then
+          print *, 'nnearest', nnearest, ip, ppiclf_npart, xp
+          print *, ppiclf_rprop(1:PPICLF_LRP, ip)
+          print *, ppiclf_y(1:PPICLF_LRS, ip)
+          print *, ppiclf_y(1:PPICLF_LRS, ip)
+          call ppiclf_exittr('Failed to interpolate',0.0d0,nnearest)
+        else
+            do i=1,nnearest
+              do j=1,3
+                A(i, j) = xp(j) - center(j, i)
+              end do
+              A(i, 4) = 1
+            enddo
+
+            do i=1,PPICLF_INT_ICNT
+
+              do k=1,nnearest
+                b(k, 1) = 0.0 ! cell averaged properties
+                if (.not. indg(k)) then ! not ghost
+                  do iz=1,PPICLF_LEZ
+                  do iy=1,PPICLF_LEY
+                  do ix=1,PPICLF_LEX
+                    b(k, 1) = b(k, 1) + ppiclf_int_fld(ix,iy,iz,i,
+     >                                  inearest(k))
+                  enddo
+                  enddo
+                  enddo
+                else ! ghost
+                  do iz=1,PPICLF_LEZ
+                  do iy=1,PPICLF_LEY
+                  do ix=1,PPICLF_LEX
+                    b(k, 1) = b(k, 1) + ppiclf_int_fldg(ix,iy,iz,i,
+     >                                  inearest(k))
+                  enddo
+                  enddo
+                  enddo
+                endif !indg
+
+                b(k, 1) = b(k, 1) / nxyz
+              enddo ! nnearest
+
+              ! linear interpolation, see Rocflu Manual for details. Not
+              ! validated. Requires lapack for SVD. 
+!              ! svd args
+!              m= nnearest
+!              n = 4
+!              lda = m
+!              ldu = m
+!              ldvt = n
+!              
+!              lwork = 5*27+4
+!
+!              jobu = 'A'
+!              jobv = 'S'
+!
+!              ! linear interpolation
+!              call dgesvd(jobu, jobv, m, n, A, lda, SIG, U, ldu, Vt,
+!     >                    ldvt, work, lwork, info)
+!
+!              ! SVD inversion
+!              b = matmul(transpose(U), b)
+!              do k=1,4
+!                b(k, 1) = b(k, 1)/SIG(k)
+!              enddo
+!
+!              interp = matmul(transpose(Vt), b(1:4, :))
+!
+!              ppiclf_rprop(j, ip) = interp(4, 1)
+
+              j = PPICLF_INT_MAP(i)
+
+              ! Nearest neighbor interpolation
+              !ppiclf_rprop(j, ip) = b(1, 1) ! nearest neighbor interpolation
+
+              ! "harmonic" interpolation
+              ppiclf_rprop(j, ip) = 0
+              wsum = 0
+              do k=1,nnearest
+                w(k) = 1.0d0 / (sqrt(d2(k)) + eps)
+                ppiclf_rprop(j, ip) = ppiclf_rprop(j, ip) + w(k)*b(k, 1)
+                wsum = wsum + w(k)
+              enddo
+
+              ppiclf_rprop(j, ip) = ppiclf_rprop(j, ip) / wsum
+
+            enddo
+
+        endif ! nnearest
+      enddo ! ip
+
+      ! reset here instead of in finalize
+      !PPICLF_INT_ICNT = 0
 
       return
       end
@@ -1484,20 +1866,21 @@ c     ndum    = ppiclf_nee*n
 
       do i=1,PPICLF_LRP_INT
 
+      ! sam - see finalize interp for note
          ! interpolate field (non-local)
-         call pfgslib_findpts_eval( fp_handle
-     >                                  ,coord (7+i,1)
-     >                                  ,rstride
-     >                                  ,flag (1,1)
-     >                                  ,istride
-     >                                  ,flag (3,1)
-     >                                  ,istride
-     >                                  ,flag (2,1)
-     >                                  ,istride
-     >                                  ,coord(4,1)
-     >                                  ,rstride
-     >                                  ,npart
-     >                                  ,ppiclf_int_fldu(1,1,1,1,i))
+!         call pfgslib_findpts_eval( fp_handle
+!     >                                  ,coord (7+i,1)
+!     >                                  ,rstride
+!     >                                  ,flag (1,1)
+!     >                                  ,istride
+!     >                                  ,flag (3,1)
+!     >                                  ,istride
+!     >                                  ,flag (2,1)
+!     >                                  ,istride
+!     >                                  ,coord(4,1)
+!     >                                  ,rstride
+!     >                                  ,npart
+!     >                                  ,ppiclf_int_fldu(1,1,1,1,i))
 
       enddo
 
@@ -1538,15 +1921,40 @@ c----------------------------------------------------------------------
       real*8 dt
 !
 
-      ppiclf_rk3coef(1,1) = 0.d00
-      ppiclf_rk3coef(2,1) = 1.0d0 
-      ppiclf_rk3coef(3,1) = dt
-      ppiclf_rk3coef(1,2) = 3.0d0/4.0d0
-      ppiclf_rk3coef(2,2) = 1.0d0/4.0d0 
-      ppiclf_rk3coef(3,2) = dt/4.0d0
-      ppiclf_rk3coef(1,3) = 1.0d0/3.0d0
-      ppiclf_rk3coef(2,3) = 2.0d0/3.0d0
-      ppiclf_rk3coef(3,3) = dt*2.0d0/3.0d0
+
+      if (ppiclf_imethod .eq. 2) then
+        !BD:Rocflu's rk3 scheme
+
+        !Folowing form
+        !rk3(1,:) = Temp storage i.e. Previous Stage RHS
+        !rk3(2,:) = Temp storage i.e. Current Stage iteration
+        !rk3(3,:) = Temp storage i.e. Current Stage RHS
+        ppiclf_rk3ark(1) = 8.0d0/15.0d0
+        ppiclf_rk3ark(2) = 5.0d0/12.0d0
+        ppiclf_rk3ark(3) = 0.75d0
+
+        ppiclf_rk3coef(1,1) = 0.d00
+        ppiclf_rk3coef(2,1) = 1.0d0
+        ppiclf_rk3coef(3,1) = dt*8.0d0/15.0d0
+        ppiclf_rk3coef(1,2) = dt*17.0d0/60.0d0
+        ppiclf_rk3coef(2,2) = 1.0d0
+        ppiclf_rk3coef(3,2) = dt*5.0d0/12.0d0
+        ppiclf_rk3coef(1,3) = dt*5.0d0/12.0d0
+        ppiclf_rk3coef(2,3) = 1.0d0
+        ppiclf_rk3coef(3,3) = dt*3.0d0/4.0d0
+      else
+        !BD:Original Code This follows CMT-nek's rk 3 scheme
+        ppiclf_rk3coef(1,1) = 0.d00
+        ppiclf_rk3coef(2,1) = 1.0d0 
+        ppiclf_rk3coef(3,1) = dt
+        ppiclf_rk3coef(1,2) = 3.0d0/4.0d0
+        ppiclf_rk3coef(2,2) = 1.0d0/4.0d0 
+        ppiclf_rk3coef(3,2) = dt/4.0d0
+        ppiclf_rk3coef(1,3) = 1.0d0/3.0d0
+        ppiclf_rk3coef(2,3) = 2.0d0/3.0d0
+        ppiclf_rk3coef(3,3) = dt*2.0d0/3.0d0
+        !BD: Original Code END
+      end if
 
       return
       end
@@ -1602,8 +2010,8 @@ c----------------------------------------------------------------------
      >             ((iperiodicz.eq.0) .and. (j.eq.2)) ) then
                    ppiclf_y(jchk,i) = ppiclf_xdrange(2,j+1) - 
      &                     abs(ppiclf_xdrange(1,j+1) - ppiclf_y(jchk,i))
-                   ppiclf_y1(isl+j)   = ppiclf_xdrange(2,j+1) +
-     &                     abs(ppiclf_xdrange(1,j+1) - ppiclf_y1(isl+j))
+!                   ppiclf_y1(isl+j)   = ppiclf_xdrange(2,j+1) +
+!     &                     abs(ppiclf_xdrange(1,j+1) - ppiclf_y1(isl+j))
                   goto 1512
                 endif
             endif
@@ -1613,13 +2021,15 @@ c----------------------------------------------------------------------
      >             ((iperiodicz.eq.0) .and. (j.eq.2)) ) then
                    ppiclf_y(jchk,i) = ppiclf_xdrange(1,j+1) +
      &                     abs(ppiclf_y(jchk,i) - ppiclf_xdrange(2,j+1))
-                   ppiclf_y1(isl+j)   = ppiclf_xdrange(1,j+1) +
-     &                     abs(ppiclf_y1(isl+j) - ppiclf_xdrange(2,j+1))
+!                   ppiclf_y1(isl+j)   = ppiclf_xdrange(1,j+1) +
+!     &                     abs(ppiclf_y1(isl+j) - ppiclf_xdrange(2,j+1))
                   goto 1512
                 endif
             endif
             if (ppiclf_iprop(1,i) .eq. 2) then
                in_part(i) = -1 ! only if periodic check fails it will get here
+               
+                  
             endif
  1512 continue
          enddo
@@ -1645,6 +2055,8 @@ c----------------------------------------------------------------------
      >              (ppiclf_rprop (1,ic),ppiclf_rprop(1,i) ,PPICLF_LRP)
                call ppiclf_copy
      >              (ppiclf_rprop2(1,ic),ppiclf_rprop2(1,i),PPICLF_LRP2)
+               call ppiclf_copy
+     >              (ppiclf_rprop3(1,ic),ppiclf_rprop3(1,i),PPICLF_LRP3)
                call ppiclf_icopy
      >              (ppiclf_iprop(1,ic) ,ppiclf_iprop(1,i) ,PPICLF_LIP)
             endif
@@ -1753,6 +2165,12 @@ c----------------------------------------------------------------------
      >          neltbc, ndum, nl, nii, njj, nrr, nlxyzep, iee, ndumdum
       real*8 pi, d2chk2_sq, rdum, multfci, rsig, rdist2, rexp, rx2(3),
      >       rx22, ry22, rz22, rtmp2, evol
+
+      ! Sam - variables for general hex volume calculation
+      real*8 v1(3), v2(3), v3(3), cross(3), centroid(3), voltet
+      real*8 face(2,2,3) ! ifacex, ifacey, xyz
+      integer*4 face_map(3,2,2,2,3) ! xyz,front/back,ifacex,ifacey,ixyz
+      integer*4 ix,ix2,iface,inode,ia,ib
 !
       if3d = .false.
       if (ppiclf_ndim .eq. 3) if3d = .true.
@@ -1777,8 +2195,8 @@ c----------------------------------------------------------------------
       rdum = 0.0d0
       if (ppiclf_lfiltgauss) then
          rsig    = ppiclf_filter/(2.0d0*sqrt(2.0d0*log(2.0d0)))
-         multfci = 1.0d0/(sqrt(2.0d0*pi)**2 * rsig**2) 
-         if (if3d) multfci = multfci**(1.5d0)
+         multfci = 1.0d0/(sqrt(2.0d0*pi)**2 * rsig**2) ! in 2D
+         if (if3d) multfci = multfci**(1.5d0) ! in 3D
          rdum   = 1.0d0/(-2.0d0*rsig**2)
       endif
 
@@ -1877,8 +2295,8 @@ c----------------------------------------------------------------------
                  if (ppiclf_el_map(5,ie) .gt. jhigh) cycle
                  if (ppiclf_el_map(6,ie) .lt. jlow)  cycle
                  if (if3d) then
-                 if (ppiclf_el_map(7,ie) .gt. khigh) cycle
-                 if (ppiclf_el_map(8,ie) .lt. klow)  cycle
+                    if (ppiclf_el_map(7,ie) .gt. khigh) cycle
+                    if (ppiclf_el_map(8,ie) .lt. klow)  cycle
                  endif
   
            do k=1,PPICLF_LEZ
@@ -1893,7 +2311,7 @@ c----------------------------------------------------------------------
   
               if (rdist2 .gt. d2chk2_sq) cycle
   
-              rexp = 1.0d0
+              rexp = 1.0d0  ! for box filter
               if (ppiclf_lfiltgauss)
      >           rexp = exp(rdist2*rproj(1,ip))
   
@@ -1932,23 +2350,122 @@ c----------------------------------------------------------------------
         enddo
       ! sngl elem
       else
+
+!BD: This is where rproj gets stored in fld, this is one of the steps
+!that should be tracked
+
+        ! Sam - build map to face coordinates for 3D general hex volume
+        ! calculation
+        do ix=1,3
+          ia = max(3-ix,1)
+          ib = min(5-ix,3)
+          do iface=1,2
+            do j=1,2
+            do i=1,2
+              face_map(ix,iface,i,j,ix) = iface ! constant
+              face_map(ix,iface,i,j,ia) = i ! ix
+              face_map(ix,iface,i,j,ib) = j ! iy
+            end do
+            end do
+          end do
+        end do
+
         do ip=1,ppiclf_npart
-           do ie=1,ppiclf_neltb
+           !do ie=1,ppiclf_neltb
   
-             ! Only use the current (single) element from findpts
-             ! Note that this assumes the element volume is that of
-             ! a cuboid... will need to get a better way for general
-             ! hexahedral element eventually
-             if (ie .ne. ppiclf_iprop(2,ip)+1) cycle
-             evol = (ppiclf_xm1b(PPICLF_LEX,1,1,1,ie) 
-     >             - ppiclf_xm1b(1,1,1,1,ie))
-             evol = evol
-     >            * (ppiclf_xm1b(1,PPICLF_LEY,1,2,ie) 
-     >             - ppiclf_xm1b(1,1,1,2,ie))
-             if (if3d)
-     >       evol = evol
-     >            * (ppiclf_xm1b(1,1,PPICLF_LEZ,3,ie) 
-     >             - ppiclf_xm1b(1,1,1,3,ie))
+             !if (ie .ne. ppiclf_iprop(2,ip)+1) cycle
+             ie = ppiclf_iprop(2, ip) + 1
+             if ((ie .lt. 1) .or. (ie .gt. ppiclf_neltb)) cycle
+
+             ! Sam - general hexahedron volume calculation
+!             if (if3d) then
+!               ! get centroid of hexahedron
+!               do ix=1,3
+!                 centroid(ix) = 0.0
+!               end do
+!
+!               do ix=1,3
+!               do k=1,PPICLF_LEZ
+!               do j=1,PPICLF_LEY
+!               do i=1,PPICLF_LEX
+!                 centroid(ix) = centroid(ix) + ppiclf_xm1b(i,j,k,ix,ie)
+!               end do
+!               end do
+!               end do
+!               end do
+!
+!               do ix=1,3
+!                 centroid(ix) = centroid(ix) / 8.0
+!               end do
+!
+!
+!               ! calculate volume based on two contributions from each
+!               ! face as tetrahedrons
+!               evol = 0.0
+!               do ix=1,3
+!                 do iface=1,2
+!
+!                   ! get face coordinates
+!                   do j=1,2
+!                   do i=1,2
+!                   do ix2=1,3
+!                     face(i,j,ix2) = ppiclf_xm1b(
+!     >                                 face_map(ix,iface,i,j,1),
+!     >                                 face_map(ix,iface,i,j,2),
+!     >                                 face_map(ix,iface,i,j,3),
+!     >                                 ix2,ie)
+!                   end do
+!                   end do
+!                   end do
+!
+!                   do ix2=1,3
+!                     v1(ix2) = face(1,2,ix2) - face(2,1,ix2)
+!                     v2(ix2) = centroid(ix2) - face(2,1,ix2)
+!                   end do ! ix2
+!
+!                   ! take cross product
+!                   cross(1) = v1(2)*v2(3) - v1(3)*v2(2)
+!                   cross(2) = v1(3)*v2(1) - v1(1)*v2(3)
+!                   cross(3) = v1(1)*v2(2) - v1(2)*v2(1)
+!
+!                   ! get contriubtions to volume from each tetrahedron
+!                   do inode=1,2
+!                   do ix2=1,3
+!                     v3(ix2) = face(inode,inode,ix2) - face(2,1,ix2)
+!                   end do ! ix2
+!
+!                   ! really 6 times the volume of the tet, but we can
+!                   ! save an operation by dividing at the end
+!                   voltet = 0.0
+!                   do ix2=1,3
+!                     voltet = voltet + v3(ix2)*cross(ix2)
+!                   end do ! ix2
+!                   evol = evol + abs(voltet)
+!                   end do ! inode
+!                   
+!                 end do ! iface
+!              end do ! ix
+!               evol = evol / 6.0
+!             else
+               ! Sam - default to naive solution for 2D. ASSUMES
+               ! rectangular elements. This will
+               ! probably never get used, but if it does throw an error
+               ! so the user is absolutely sure of what they're doing.
+!               call ppiclf_exittr('Single element projection only
+!     >          supported in 3D for general hex elements. Comment and
+!     >          ignore this error if your elements are perfect
+!     >          rectangles. $',0.0d0,0)
+
+               evol = (ppiclf_xm1b(PPICLF_LEX,1,1,1,ie) 
+     >               - ppiclf_xm1b(1,1,1,1,ie))
+               evol = evol
+     >              * (ppiclf_xm1b(1,PPICLF_LEY,1,2,ie) 
+     >               - ppiclf_xm1b(1,1,1,2,ie))
+               if (if3d) evol = evol
+     >              * (ppiclf_xm1b(1,1,PPICLF_LEZ,3,ie) 
+     >               - ppiclf_xm1b(1,1,1,3,ie))
+!            end if ! if3d
+
              rexp = 1.0 / evol
            do k=1,PPICLF_LEZ
            do j=1,PPICLF_LEY
@@ -1963,8 +2480,8 @@ c----------------------------------------------------------------------
            enddo
            enddo
            enddo
-        enddo
-      endif
+        !enddo ! ppiclf_neltb
+      endif ! ppiclf_npart
 
       ! now send xm1b to the processors in nek that hold xm1
 

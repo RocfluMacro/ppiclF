@@ -7,11 +7,14 @@ C Grid
       COMMON /PPICLF_GRID_FLD_R/ PPICLF_PRO_FLD, PPICLF_INT_FLD
      >                          ,PPICLF_INT_FLDU ,PPICLF_PRO_FLDB 
      >                          ,PPICLF_XM1B ,PPICLF_XM1BS, PPICLF_XM1BI
+     >                          ,PPICLF_XM1BG, PPICLF_INT_FLDG
       REAL*8 PPICLF_PRO_FLD (PPICLF_LEX,PPICLF_LEY,PPICLF_LEZ,PPICLF_LEE
      >                      ,PPICLF_LRP_PRO),
      >       PPICLF_INT_FLDU(PPICLF_LEX,PPICLF_LEY,PPICLF_LEZ
      >                      ,PPICLF_LEE,PPICLF_LRP_INT),
      >       PPICLF_INT_FLD (PPICLF_LEX,PPICLF_LEY,PPICLF_LEZ
+     >                      ,PPICLF_LRP_INT,PPICLF_LEE),
+     >       PPICLF_INT_FLDG(PPICLF_LEX,PPICLF_LEY,PPICLF_LEZ
      >                      ,PPICLF_LRP_INT,PPICLF_LEE),
      >       PPICLF_PRO_FLDB(PPICLF_LEX,PPICLF_LEY,PPICLF_LEZ
      >                      ,PPICLF_LRP_PRO,PPICLF_LEE),
@@ -20,19 +23,27 @@ C Grid
      >       PPICLF_XM1BS   (PPICLF_LEX,PPICLF_LEY,PPICLF_LEZ
      >                      ,3,PPICLF_LEE),
      >       PPICLF_XM1BI   (PPICLF_LEX,PPICLF_LEY,PPICLF_LEZ
-     >                      ,PPICLF_LEE,3)
+     >                      ,PPICLF_LEE,3),
+     >       PPICLF_XM1BG   (PPICLF_LEX,PPICLF_LEY,PPICLF_LEZ
+     >                      ,3,PPICLF_LEE)
 
       COMMON /PPICLF_GRID_BIN_MAP_I/ PPICLF_ER_MAP,PPICLF_ER_MAPC
-     >                        ,PPICLF_ER_MAPS,PPICLF_EL_MAP
+     >                        ,PPICLF_ER_MAPS,PPICLF_ER_MAPG
+     >                        ,PPICLF_EL_MAP,PPICLF_ER_MAPGS
+     >                        ,PPICLF_ER_MAPGC
      >                        ,PPICLF_MODGP,PPICLF_NELTB,PPICLF_NELTBB
-     >                        ,PPICLF_NELTBBB
+     >                        ,PPICLF_NELTBBB,PPICLF_NELTBG
+     >                        ,PPICLF_NELTBBG
       INTEGER*4 PPICLF_ER_MAP (PPICLF_LRMAX,PPICLF_LEE),
      >         PPICLF_ER_MAPC(PPICLF_LRMAX,PPICLF_LEE),
      >         PPICLF_ER_MAPS(PPICLF_LRMAX,PPICLF_LEE),
+     >         PPICLF_ER_MAPG(PPICLF_LRMAX,PPICLF_LEE),
+     >         PPICLF_ER_MAPGS(PPICLF_LRMAX,PPICLF_LEE),
+     >         PPICLF_ER_MAPGC(PPICLF_LRMAX,PPICLF_LEE),
      >         PPICLF_MODGP  (PPICLF_LEX,PPICLF_LEY,PPICLF_LEZ
      >                       ,PPICLF_LEE,4),
      >         PPICLF_EL_MAP (8,PPICLF_LEE), PPICLF_NELTB,PPICLF_NELTBB,
-     >         PPICLF_NELTBBB
+     >         PPICLF_NELTBBB,PPICLF_NELTBG, PPICLF_NELTBBG
 
       INTEGER*4 PPICLF_NEE
       COMMON /PPICLF_GRID_ORIG_CELL_N/ PPICLF_NEE
