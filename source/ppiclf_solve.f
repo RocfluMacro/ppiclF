@@ -2378,75 +2378,75 @@ c----------------------------------------------------------------------
              if ((ie .lt. 1) .or. (ie .gt. ppiclf_neltb)) cycle
 
              ! Sam - general hexahedron volume calculation
-!             if (if3d) then
-!               ! get centroid of hexahedron
-!               do ix=1,3
-!                 centroid(ix) = 0.0
-!               end do
-!
-!               do ix=1,3
-!               do k=1,PPICLF_LEZ
-!               do j=1,PPICLF_LEY
-!               do i=1,PPICLF_LEX
-!                 centroid(ix) = centroid(ix) + ppiclf_xm1b(i,j,k,ix,ie)
-!               end do
-!               end do
-!               end do
-!               end do
-!
-!               do ix=1,3
-!                 centroid(ix) = centroid(ix) / 8.0
-!               end do
-!
-!
-!               ! calculate volume based on two contributions from each
-!               ! face as tetrahedrons
-!               evol = 0.0
-!               do ix=1,3
-!                 do iface=1,2
-!
-!                   ! get face coordinates
-!                   do j=1,2
-!                   do i=1,2
-!                   do ix2=1,3
-!                     face(i,j,ix2) = ppiclf_xm1b(
-!     >                                 face_map(ix,iface,i,j,1),
-!     >                                 face_map(ix,iface,i,j,2),
-!     >                                 face_map(ix,iface,i,j,3),
-!     >                                 ix2,ie)
-!                   end do
-!                   end do
-!                   end do
-!
-!                   do ix2=1,3
-!                     v1(ix2) = face(1,2,ix2) - face(2,1,ix2)
-!                     v2(ix2) = centroid(ix2) - face(2,1,ix2)
-!                   end do ! ix2
-!
-!                   ! take cross product
-!                   cross(1) = v1(2)*v2(3) - v1(3)*v2(2)
-!                   cross(2) = v1(3)*v2(1) - v1(1)*v2(3)
-!                   cross(3) = v1(1)*v2(2) - v1(2)*v2(1)
-!
-!                   ! get contriubtions to volume from each tetrahedron
-!                   do inode=1,2
-!                   do ix2=1,3
-!                     v3(ix2) = face(inode,inode,ix2) - face(2,1,ix2)
-!                   end do ! ix2
-!
-!                   ! really 6 times the volume of the tet, but we can
-!                   ! save an operation by dividing at the end
-!                   voltet = 0.0
-!                   do ix2=1,3
-!                     voltet = voltet + v3(ix2)*cross(ix2)
-!                   end do ! ix2
-!                   evol = evol + abs(voltet)
-!                   end do ! inode
-!                   
-!                 end do ! iface
-!              end do ! ix
-!               evol = evol / 6.0
-!             else
+             if (if3d) then
+               ! get centroid of hexahedron
+               do ix=1,3
+                 centroid(ix) = 0.0
+               end do
+
+               do ix=1,3
+               do k=1,PPICLF_LEZ
+               do j=1,PPICLF_LEY
+               do i=1,PPICLF_LEX
+                 centroid(ix) = centroid(ix) + ppiclf_xm1b(i,j,k,ix,ie)
+               end do
+               end do
+               end do
+               end do
+
+               do ix=1,3
+                 centroid(ix) = centroid(ix) / 8.0
+               end do
+
+
+               ! calculate volume based on two contributions from each
+               ! face as tetrahedrons
+               evol = 0.0
+               do ix=1,3
+                 do iface=1,2
+
+                   ! get face coordinates
+                   do j=1,2
+                   do i=1,2
+                   do ix2=1,3
+                     face(i,j,ix2) = ppiclf_xm1b(
+     >                                 face_map(ix,iface,i,j,1),
+     >                                 face_map(ix,iface,i,j,2),
+     >                                 face_map(ix,iface,i,j,3),
+     >                                 ix2,ie)
+                   end do
+                   end do
+                   end do
+
+                   do ix2=1,3
+                     v1(ix2) = face(1,2,ix2) - face(2,1,ix2)
+                     v2(ix2) = centroid(ix2) - face(2,1,ix2)
+                   end do ! ix2
+
+                   ! take cross product
+                   cross(1) = v1(2)*v2(3) - v1(3)*v2(2)
+                   cross(2) = v1(3)*v2(1) - v1(1)*v2(3)
+                   cross(3) = v1(1)*v2(2) - v1(2)*v2(1)
+
+                   ! get contriubtions to volume from each tetrahedron
+                   do inode=1,2
+                   do ix2=1,3
+                     v3(ix2) = face(inode,inode,ix2) - face(2,1,ix2)
+                   end do ! ix2
+
+                   ! really 6 times the volume of the tet, but we can
+                   ! save an operation by dividing at the end
+                   voltet = 0.0
+                   do ix2=1,3
+                     voltet = voltet + v3(ix2)*cross(ix2)
+                   end do ! ix2
+                   evol = evol + abs(voltet)
+                   end do ! inode
+                   
+                 end do ! iface
+              end do ! ix
+               evol = evol / 6.0
+             else
                ! Sam - default to naive solution for 2D. ASSUMES
                ! rectangular elements. This will
                ! probably never get used, but if it does throw an error
@@ -2461,10 +2461,10 @@ c----------------------------------------------------------------------
                evol = evol
      >              * (ppiclf_xm1b(1,PPICLF_LEY,1,2,ie) 
      >               - ppiclf_xm1b(1,1,1,2,ie))
-               if (if3d) evol = evol
-     >              * (ppiclf_xm1b(1,1,PPICLF_LEZ,3,ie) 
-     >               - ppiclf_xm1b(1,1,1,3,ie))
-!            end if ! if3d
+!               if (if3d) evol = evol
+!     >              * (ppiclf_xm1b(1,1,PPICLF_LEZ,3,ie) 
+!     >               - ppiclf_xm1b(1,1,1,3,ie))
+            end if ! if3d
 
              rexp = 1.0 / evol
            do k=1,PPICLF_LEZ
